@@ -1,0 +1,67 @@
+//@version=5
+indicator("NXS [Command XXXV - SLN Map]", "NXS SLN", overlay=true, max_lines_count=100)
+
+//══════════════════════════════════════════════════════════════════════════════
+// 1. SETTINGS
+//══════════════════════════════════════════════════════════════════════════════
+g_set = "Detection Logic"
+scan_tf    = input.timeframe("15", "Scanning Timeframe", group=g_set, tooltip="Higher TFs (15m, 1H, 4H) produce stronger levels.")
+sens       = input.float(1.5, "Volume Sensitivity", minval=0.5, step=0.1, group=g_set, tooltip="Volume must be X times higher than average.")
+lookback   = input.int(20, "Lookback Period", minval=5, group=g_set)
+
+g_vis = "Visuals"
+show_lines = input.bool(true, "Show SLN Lines", group=g_vis)
+ln_color   = input.color(color.new(color.white, 20), "Line Color", group=g_vis)
+ln_width   = input.int(1, "Line Width", group=g_vis)
+max_lines  = input.int(20, "Max Levels Kept", minval=5, maxval=50, group=g_vis)
+
+//══════════════════════════════════════════════════════════════════════════════
+// 2. DATA REQUEST (THE SCANNER)
+//══════════════════════════════════════════════════════════════════════════════
+// We request data from the 'Scanning Timeframe' so levels are significant
+[h, l, c, v, confirmed] = request.security(syminfo.tickerid, scan_tf, [high, low, close, volume, barstate.isconfirmed], lookahead=barmerge.lookahead_off)
+
+//══════════════════════════════════════════════════════════════════════════════
+// 3. DETECTION LOGIC (ORIGINAL ALGORITHM)
+//══════════════════════════════════════════════════════════════════════════════
+// 1. Volume Cluster Check
+avg_vol = ta.sma(v, lookback)
+is_high_vol = v > (avg_vol * sens)
+
+// 2. Absorption / Rejection Check
+is_stall = (ta.highest(c, lookback) == c) or (ta.lowest(c, lookback) == c)
+wick_rej_up = (h == ta.highest(h, lookback)) and (c < h)
+wick_rej_dn = (l == ta.lowest(l, lookback)) and (c > l)
+
+// 3. The Signal
+is_sln = is_high_vol and is_stall and (wick_rej_up or wick_rej_dn)
+
+//══════════════════════════════════════════════════════════════════════════════
+// 4. DRAWING ENGINE (THE MAP MAKER)
+//══════════════════════════════════════════════════════════════════════════════
+var array<line> sln_lines = array.new<line>()
+var array<float> sln_prices = array.new<float>()
+
+if confirmed and is_sln and show_lines
+    // Duplicate Check: Don't draw if a level exists very close (0.1% range)
+    bool exists = false
+    if array.size(sln_prices) > 0
+        for i = 0 to array.size(sln_prices) - 1
+            if math.abs(array.get(sln_prices, i) - c) < (c * 0.001)
+                exists := true
+                break
+    
+    // Draw New Level if Unique
+    if not exists
+        // Draw the line
+        new_ln = line.new(bar_index, c, bar_index + 10, c, xloc=xloc.bar_index, color=ln_color, width=ln_width, style=line.style_solid)
+        line.set_extend(new_ln, extend.right) // Infinite Extension
+        
+        // Store in memory
+        array.push(sln_lines, new_ln)
+        array.push(sln_prices, c)
+        
+        // Garbage Collection: Remove oldest if over limit
+        if array.size(sln_lines) > max_lines
+            line.delete(array.shift(sln_lines))
+            array.shift(sln_prices)
